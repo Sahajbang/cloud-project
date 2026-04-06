@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.glow-on-hover {
+  transition: filter 0.3s ease, box-shadow 0.3s ease;
+}
+
+.glow-on-hover:hover {
+  filter: brightness(2) saturate(2);
+  box-shadow: 0 0 12px currentColor;
+}
