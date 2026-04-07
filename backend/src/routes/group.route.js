@@ -9,14 +9,14 @@ const router = express.Router();
 
 // ✅ Create a new group
 router.post("/create", protectRoute, async (req, res) => {
-  const { name, memberIds } = req.body;
+  const { name, memberIds, groupPic } = req.body;
 
   if (!name || !Array.isArray(memberIds)) {
     return res.status(400).json({ message: "Invalid input" });
   }
 
   try {
-    const group = new Group({ name, members: memberIds });
+    const group = new Group({ name, members: memberIds, groupPic });
     await group.save();
     res.status(201).json({ success: true, group });
   } catch (err) {
@@ -28,7 +28,8 @@ router.post("/create", protectRoute, async (req, res) => {
 router.get("/", protectRoute, async (req, res) => {
   try {
     const groups = await Group.find({ members: req.user._id })
-      .populate("members", "fullName profilePic");
+      .populate("members", "fullName profilePic")
+      .select("name members groupPic createdAt updatedAt");
     res.status(200).json(groups);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch groups" });
@@ -135,7 +136,7 @@ router.put("/remove-member", protectRoute, async (req, res) => {
 
 router.put("/:id", protectRoute, async (req, res) => {
   const { id } = req.params;
-  const { name, memberIds } = req.body;
+  const { name, memberIds, groupPic } = req.body;
 
   if (!name || !Array.isArray(memberIds)) {
     return res.status(400).json({ message: "Invalid input" });
@@ -149,11 +150,101 @@ router.put("/:id", protectRoute, async (req, res) => {
 
     group.name = name;
     group.members = memberIds;
+    group.groupPic = groupPic;
     await group.save();
 
     res.status(200).json({ success: true, message: "Group updated", group });
   } catch (err) {
     res.status(500).json({ message: "Failed to update group" });
+  }
+});
+
+// ✅ Delete a group
+router.delete("/:id", protectRoute, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const group = await Group.findById(id);
+    if (!group) {
+      return res.status(404).json({ message: "Group not found" });
+    }
+
+    // Delete all messages associated with this group
+    await GroupMessage.deleteMany({ groupId: id });
+
+    // Delete the group
+    await Group.findByIdAndDelete(id);
+
+    res.status(200).json({ message: "Group deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting group:", err);
+    res.status(500).json({ message: "Failed to delete group" });
+  }
+});
+
+// Edit a group message
+router.put("/messages/:messageId", protectRoute, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { text } = req.body;
+    const userId = req.user._id;
+
+    const message = await GroupMessage.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    // Check if the user is the sender of the message
+    if (message.senderId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "You can only edit your own messages" });
+    }
+
+    message.text = text;
+    await message.save();
+
+    const updatedMessage = await message.populate("senderId", "fullName profilePic");
+
+    // Emit message update event
+    io.emit("groupMessageUpdate", {
+      messageId,
+      groupId: message.groupId,
+      message: updatedMessage,
+    });
+
+    res.status(200).json(updatedMessage);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to edit message" });
+  }
+});
+
+// Delete a group message
+router.delete("/messages/:messageId", protectRoute, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user._id;
+
+    const message = await GroupMessage.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    // Check if the user is the sender of the message
+    if (message.senderId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "You can only delete your own messages" });
+    }
+
+    const groupId = message.groupId;
+    await GroupMessage.findByIdAndDelete(messageId);
+
+    // Emit message deletion event
+    io.emit("groupMessageDelete", {
+      messageId,
+      groupId,
+    });
+
+    res.status(200).json({ message: "Message deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete message" });
   }
 });
 

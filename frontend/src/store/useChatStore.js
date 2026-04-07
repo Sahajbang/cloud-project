@@ -46,12 +46,12 @@ export const useChatStore = create((set, get) => {
     },
 
     clearUnreadMessage: (chatId) => {
-      console.log("[clearUnreadMessage] Clearing unread messages for", chatId);
-      console.log("[clearUnreadMessage] Current unread messages:", get().unreadMessages);
+      //console.log("[clearUnreadMessage] Clearing unread messages for", chatId);
+      //console.log("[clearUnreadMessage] Current unread messages:", get().unreadMessages);
       set((state) => {
         const updated = { ...state.unreadMessages };
         delete updated[chatId];
-        console.log("[clearUnreadMessage] Updated unread messages:", updated);
+        //console.log("[clearUnreadMessage] Updated unread messages:", updated);
         // Persist the updated unread messages
         localStorage.setItem('unreadMessages', JSON.stringify(updated));
         return { unreadMessages: updated };
@@ -61,7 +61,7 @@ export const useChatStore = create((set, get) => {
     hasUnreadMessage: (chatId) => {
       const unread = get().unreadMessages;
       const hasUnread = Array.isArray(unread[chatId]) && unread[chatId].length > 0;
-      console.log("[hasUnreadMessage] Checking unread for", chatId, "Result:", hasUnread, "State:", unread);
+      //console.log("[hasUnreadMessage] Checking unread for", chatId, "Result:", hasUnread, "State:", unread);
       return hasUnread;
     },
 
@@ -145,6 +145,46 @@ export const useChatStore = create((set, get) => {
       }
     },
 
+    editMessage: async (messageId, text, isGroup = false) => {
+      try {
+        const endpoint = isGroup
+          ? `/groups/messages/${messageId}`
+          : `/messages/${messageId}`;
+
+        const res = await axiosInstance.put(endpoint, { text });
+
+        // Update local messages
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg._id === messageId ? { ...msg, text } : msg
+          ),
+        }));
+
+        toast.success("Message updated successfully!");
+      } catch (error) {
+        toast.error(error.response?.data?.message || "Failed to edit message");
+      }
+    },
+
+    deleteMessage: async (messageId, isGroup = false) => {
+      try {
+        const endpoint = isGroup
+          ? `/groups/messages/${messageId}`
+          : `/messages/${messageId}`;
+
+        await axiosInstance.delete(endpoint);
+
+        // Update local messages
+        set((state) => ({
+          messages: state.messages.filter((msg) => msg._id !== messageId),
+        }));
+
+        toast.success("Message deleted successfully!");
+      } catch (error) {
+        toast.error(error.response?.data?.message || "Failed to delete message");
+      }
+    },
+
     subscribeToMessages: () => {
       if (isSubscribed) {
         console.log("[subscribeToMessages] Already subscribed");
@@ -162,7 +202,7 @@ export const useChatStore = create((set, get) => {
       socket.on("newMessage", (newMessage) => {
         console.log("[Socket] Received new message:", newMessage);
         const { selectedUser, selectedGroup, messages, authUser } = get();
-        
+
         // Check if we should show this message (either sender or receiver is current user)
         const isRelevantToUser = newMessage.senderId === authUser?._id || newMessage.receiverId === authUser?._id;
         if (!isRelevantToUser) return;
@@ -198,7 +238,7 @@ export const useChatStore = create((set, get) => {
         console.log("[Socket] Chat is not open, marking as unread");
         const chatId = newMessage.senderId;
         get().addUnreadMessage(chatId, newMessage);
-        
+
         try {
           showNotification(
             newMessage.senderName || "New Message",
@@ -223,7 +263,7 @@ export const useChatStore = create((set, get) => {
         } else {
           console.log("[Socket] Group chat is not open, marking as unread");
           get().addUnreadMessage(newMessage.groupId, newMessage);
-          
+
           try {
             showNotification(
               `${newMessage.senderName} in ${newMessage.groupName}`,
@@ -233,6 +273,35 @@ export const useChatStore = create((set, get) => {
             console.log("[Socket] Could not show notification:", error);
           }
         }
+      });
+
+      // Add handlers for message updates and deletions
+      socket.on("messageUpdate", ({ messageId, text }) => {
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg._id === messageId ? { ...msg, text } : msg
+          ),
+        }));
+      });
+
+      socket.on("messageDelete", ({ messageId }) => {
+        set((state) => ({
+          messages: state.messages.filter((msg) => msg._id !== messageId),
+        }));
+      });
+
+      socket.on("groupMessageUpdate", ({ messageId, message }) => {
+        set((state) => ({
+          messages: state.messages.map((msg) =>
+            msg._id === messageId ? message : msg
+          ),
+        }));
+      });
+
+      socket.on("groupMessageDelete", ({ messageId }) => {
+        set((state) => ({
+          messages: state.messages.filter((msg) => msg._id !== messageId),
+        }));
       });
 
       isSubscribed = true;
@@ -253,15 +322,15 @@ export const useChatStore = create((set, get) => {
 
     setSelectedUser: async (user) => {
       const { selectedUser, unsubscribeFromMessages, subscribeToMessages, clearUnreadMessage } = get();
-      
+
       // If selecting the same user, do nothing
       if (selectedUser?._id === user?._id) return;
 
       console.log("[setSelectedUser] Setting selected user:", user?._id);
-      
+
       // Clear previous selection and messages
       set({ selectedUser: user, selectedGroup: null, messages: [] });
-      
+
       // Don't proceed with message loading for AskAI
       if (user?._id === "askai") return;
 
@@ -291,7 +360,7 @@ export const useChatStore = create((set, get) => {
       subscribeToMessages();
     },
 
-    createGroup: async (groupName, userIds) => {
+    createGroup: async (groupName, userIds, groupPic) => {
       try {
         const currentUser = useAuthStore.getState().authUser;
         if (!currentUser || !currentUser._id) {
@@ -300,47 +369,45 @@ export const useChatStore = create((set, get) => {
 
         const allMemberIds = Array.from(new Set([...userIds, currentUser._id]));
 
-        const res = await fetch("/api/groups/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ name: groupName, memberIds: allMemberIds }),
+        const res = await axiosInstance.post("/groups/create", {
+          name: groupName,
+          memberIds: allMemberIds,
+          groupPic,
         });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Server error ${res.status}: ${errText}`);
-        }
-
-        await res.json();
         toast.success("Group created successfully!");
         get().getGroups();
       } catch (err) {
         console.error("Error creating group:", err);
-        toast.error("Failed to create group");
+        toast.error(err.response?.data?.message || "Failed to create group");
       }
     },
 
-    editGroup: async (groupId, newName, newMemberIds) => {
+    editGroup: async (groupId, newName, newMemberIds, groupPic) => {
       try {
-        const res = await fetch(`/api/groups/${groupId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ name: newName, memberIds: newMemberIds }),
+        const res = await axiosInstance.put(`/groups/${groupId}`, {
+          name: newName,
+          memberIds: newMemberIds,
+          groupPic,
         });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Server error ${res.status}: ${errText}`);
-        }
-
-        await res.json();
         toast.success("Group updated successfully!");
         get().getGroups();
       } catch (err) {
         console.error("Error updating group:", err);
-        toast.error("Failed to update group");
+        toast.error(err.response?.data?.message || "Failed to update group");
+      }
+    },
+
+    deleteGroup: async (groupId) => {
+      try {
+        await axiosInstance.delete(`/groups/${groupId}`);
+        toast.success("Group deleted successfully!");
+        get().setSelectedGroup(null);
+        get().getGroups();
+      } catch (err) {
+        console.error("Error deleting group:", err);
+        toast.error(err.response?.data?.message || "Failed to delete group");
       }
     },
   };
